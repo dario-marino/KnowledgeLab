@@ -1,5 +1,5 @@
-## Cleaning Bluebook
-# We start with this code to get from 2000 to 2024, then we move to the next format
+# Cleaning Bluebook
+## We start with this code to get from 2000 to 2024, then we move to the next format
 
 ```
 import os
@@ -122,6 +122,8 @@ print(f"✅  Written {len(df_out)} rows to {OUTPUT_CSV}")
 
 ```
 
-## We did catch something that we shouldn't have, 1997, let's cancel manually:
-## Row 2 to 13, column C and column G to column BD, and all the columns remaining to the left of WW ASP
-## Except Americas Units, Europe Units,	Japan Units, Asia Pacific Units
+### We did catch something that we shouldn't have let's cancel manually:
+Row 2 to 13, column C and column G to column BD, and all the columns remaining to the left of WW ASP, except Americas Units, Europe Units, Japan Units, Asia Pacific Units.
+
+
+## From 1976 to 1999
