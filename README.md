@@ -399,7 +399,8 @@ You can see for example this graph here for the A99 Diodes:
 
 ## We expand the dictionary in the factsheet like Sinan did
 
-We use this [code](https://github.com/dario-marino/KnowledgeLab/blob/main/Expand_Factsheet.py). The file is too big you will find it in: 
+We use this [code](https://github.com/dario-marino/KnowledgeLab/blob/main/Expand_Factsheet.py). The file is too big you will find it in: /project/jevans/apto_data_engineering/personalFolders/dariomarino
+
 
 
 
