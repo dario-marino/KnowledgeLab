@@ -3,115 +3,113 @@ import re
 import glob
 import pandas as pd
 
-# ── CONFIG ─────────────────────────────────────────────────────────────────────
-INPUT_DIR    = r"C:\Users\dario\Downloads\Shipment Data"
-OUTPUT_CSV   = os.path.join(INPUT_DIR, "Shipment_Data_2001_2024.csv")
-FILE_PATTERN = os.path.join(INPUT_DIR, "Bluebook-*.xls")
+# Only these variables will be extracted
+DESIRED_VARS = {
+    'Americas', 'Europe', 'Japan', 'Asia Pacific',
+    'WW Dollars', 'WW Units', 'WW ASP'
+}
 
-# ── DEPENDENCY CHECK ────────────────────────────────────────────────────────────
-try:
-    import xlrd
-except ImportError:
-    raise ImportError(
-        "Missing `xlrd`. Install it with:\n"
-        "    pip install xlrd\n"
-        "  or\n"
-        "    conda install -c anaconda xlrd"
-    )
+def _make_date(year, mon):
+    """Convert a year and month/quarter string to a Timestamp for the first day."""
+    q_map = {'Q1': '01', 'Q2': '04', 'Q3': '07', 'Q4': '10'}
+    mon = mon.strip()
+    if mon in q_map:
+        month_num = int(q_map[mon])
+    else:
+        # Parse month abbreviations (Jan, Feb, …)
+        month_num = pd.to_datetime(mon[:3], format='%b').month
+    return pd.Timestamp(year=int(year), month=month_num, day=1)
 
-# ── HELPERS ─────────────────────────────────────────────────────────────────────
-MONTH_ABBR = {"Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"}
-
-def is_month_label(x):
-    if isinstance(x, str):
-        s = x.strip()[:3].capitalize()
-        return s in MONTH_ABBR
-    try:
-        i = int(x)
-        return 1 <= i <= 12
-    except:
-        return False
-
-# ── PROCESS ALL FILES ───────────────────────────────────────────────────────────
-all_records = []
-
-for path in glob.glob(FILE_PATTERN):
-    year = int(re.search(r"(\d{4})", os.path.basename(path)).group(1))
-    xls = pd.ExcelFile(path, engine="xlrd")
+def clean_and_restructure(data_dir):
+    """
+    Reads all Bluebook-*.csv files in `data_dir`, extracts product-level data by month/quarter,
+    and returns a consolidated DataFrame with one row per product-date, variables as columns.
+    """
+    file_pattern = os.path.join(data_dir, "Bluebook-*.csv")
+    files = sorted(glob.glob(file_pattern))
     
-    # 1) Find the sheet & row‐index with the real 12‐month header
-    best = {"score": 0}
-    for sheet in xls.sheet_names:
-        df0 = xls.parse(sheet, header=None)
-        # look at first 30 rows
-        for ridx in range(min(30, len(df0))):
-            row = df0.iloc[ridx, 1:]  # skip col0
-            cnt = sum(is_month_label(c) for c in row)
-            if cnt > best["score"]:
-                best = {
-                    "sheet": sheet,
-                    "header_idx": ridx,
-                    "score": cnt,
-                    "raw": df0
-                }
-    if best["score"] < 6:
-        raise ValueError(f"Couldn't find a 12-month header in {path}")
+    if not files:
+        raise FileNotFoundError(f"No files found in {data_dir} matching Bluebook-*.csv")
     
-    # 2) Slice down to header + data
-    df = best["raw"].iloc[ best["header_idx"] : , : ].reset_index(drop=True)
-    raw_labels = df.iloc[0, 1:].tolist()
-    raw_cols   = df.columns[1:]
+    all_records = []
+    # Regex for valid period headers (months or quarters)
+    period_regex = re.compile(r'^(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|Q[1-4])', re.IGNORECASE)
     
-    # 3) Keep ONLY the 12 month columns
-    month_pos = [i for i,lab in enumerate(raw_labels) if is_month_label(lab)]
-    month_labels = [raw_labels[i] for i in month_pos]
-    month_cols   = [raw_cols[i]    for i in month_pos]
-    
-    # 4) Walk the product/variable blocks
-    current_code = None
-    product_records = None
-    
-    for _, row in df.iloc[1:].iterrows():
-        first = row.iloc[0]
-        if isinstance(first, str) and re.match(r"^[A-Za-z]\d+", first.strip()):
-            # flush previous
-            if product_records:
-                for col, rec in product_records.items():
-                    rec["Product"] = current_code
-                    label = month_labels[ month_cols.index(col) ]
-                    # parse date
-                    if isinstance(label, str) and label.strip()[:3].capitalize() in MONTH_ABBR:
-                        dt = pd.to_datetime(f"{label.strip()} {year}", format="%b %Y")
-                    else:
-                        dt = pd.to_datetime(f"{year}-{int(label):02d}-01")
-                    rec["Date"] = dt.strftime("%Y-%m-%d")
-                    all_records.append(rec)
-            # start new block
-            current_code    = first.strip()
-            product_records = {c: {} for c in month_cols}
-        else:
-            if product_records is None:
+    for filepath in files:
+        year_match = re.search(r'(\d{4})', os.path.basename(filepath))
+        if not year_match:
+            continue
+        year = int(year_match.group(1))
+        
+        df = pd.read_csv(filepath)
+        label_col = df.columns[0]
+        # Filter to only month/quarter columns
+        periods = [col for col in df.columns 
+                   if col != label_col and period_regex.match(col)]
+        
+        current_product = None
+        for _, row in df.iterrows():
+            label = str(row[label_col]).strip()
+            # Start of a new product
+            if re.match(r'^[A-Za-z]\d+', label):
+                current_product = label
                 continue
-            var = str(first).strip()
-            for c in month_cols:
-                product_records[c][var] = row[c]
+            
+            # Skip until we have a product, skip empty or classification headers
+            if (
+                not current_product 
+                or not label 
+                or 'world-wide detail by subproduct classification' in label.lower()
+            ):
+                continue
+            
+            # Only keep the seven requested variables
+            if label not in DESIRED_VARS:
+                continue
+            
+            # Record each period's value
+            for p in periods:
+                all_records.append({
+                    'product': current_product,
+                    'year': year,
+                    'period': p,
+                    'variable': label,
+                    'value': row[p]
+                })
     
-    # flush last block
-    if product_records:
-        for col, rec in product_records.items():
-            rec["Product"] = current_code
-            label = month_labels[ month_cols.index(col) ]
-            if isinstance(label, str) and label.strip()[:3].capitalize() in MONTH_ABBR:
-                dt = pd.to_datetime(f"{label.strip()} {year}", format="%b %Y")
-            else:
-                dt = pd.to_datetime(f"{year}-{int(label):02d}-01")
-            rec["Date"] = dt.strftime("%Y-%m-%d")
-            all_records.append(rec)
+    df_long = pd.DataFrame(all_records)
+    
+    # Pivot so that each variable becomes its own column
+    df_wide = (
+        df_long
+        .pivot_table(
+            index=['product', 'year', 'period'],
+            columns='variable',
+            values='value',
+            aggfunc='first'
+        )
+        .reset_index()
+    )
+    
+    # Build a proper date (first of each month/quarter)
+    df_wide['date'] = df_wide.apply(
+        lambda r: _make_date(r['year'], r['period']), axis=1
+    )
+    
+    # Final column order
+    final_cols = ['product', 'date'] + sorted(DESIRED_VARS)
+    df_final = df_wide[final_cols].sort_values(['product', 'date'])
+    
+    return df_final
 
-# ── BUILD & WRITE OUTPUT ────────────────────────────────────────────────────────
-df_out = pd.DataFrame(all_records)
-cols   = ["Product", "Date"] + [c for c in df_out.columns if c not in ("Product","Date")]
-df_out = df_out[cols]
-df_out.to_csv(OUTPUT_CSV, index=False)
+if __name__ == "__main__":
+    # Update this to your actual folder; fallback for testing in /mnt/data
+    data_directory = r"C:\Users\dario\Downloads\Shipment Data"
+    if not os.path.isdir(data_directory):
+        data_directory = "/mnt/data"
 
-print(f"✅  Written {len(df_out)} rows to {OUTPUT_CSV}")
+    cleaned_df = clean_and_restructure(data_directory)
+    output_path = os.path.join(data_directory, "shipments_cleaned.csv")
+    cleaned_df.to_csv(output_path, index=False)
+    print(f"Cleaned data written to:\n  {output_path}")
+    print(cleaned_df.head())
